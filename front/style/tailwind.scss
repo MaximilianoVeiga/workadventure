@@ -1,6 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import "wa-theme/action-menu-bar.scss";
 
 @layer base {
     * {
@@ -49,7 +50,7 @@
     //Buttons - basic buttons appearance
     button,
     .btn {
-        @apply tw-border-none tw-rounded tw-px-2 tw-py-1 tw-mx-0.5 tw-my-1 tw-items-center tw-flex tw-no-underline tw-transition-colors tw-duration-300 tw-break-words;
+        @apply tw-border-none tw-rounded tw-px-2 tw-py-1 tw-mx-0.5 tw-my-1 tw-items-center tw-flex tw-no-underline tw-transition-colors tw-duration-300 tw-break-words tw-outline-none;
         @apply md:tw-px-4;
         * {
             @apply clickable;
@@ -72,7 +73,7 @@
 
     //Dialog boxes used to notify user about something (follow feature, jitsi room, etc...)
     .blue-dialog-box {
-        @apply tw-bg-dark-purple/95 tw-rounded tw-text-light-blue tw-self-center tw-m-1 tw-p-1 tw-align-middle tw-align-middle;
+        @apply tw-bg-dark-purple/95 tw-rounded tw-text-light-blue tw-self-center tw-m-1 tw-p-1 tw-align-middle tw-align-middle tw-pointer-events-auto;
     }
 
     .outline-light {

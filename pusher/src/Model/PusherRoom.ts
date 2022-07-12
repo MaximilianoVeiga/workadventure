@@ -18,11 +18,11 @@ const debug = Debug("room");
 
 export class PusherRoom {
     private readonly positionNotifier: PositionDispatcher;
+    private versionNumber = 1;
     public mucRooms: Array<Object> = [];
 
-    private versionNumber: number = 1;
     private backConnection!: ClientReadableStream<BatchToPusherRoomMessage>;
-    private isClosing: boolean = false;
+    private isClosing = false;
     private listeners: Set<ExSocketInterface> = new Set<ExSocketInterface>();
 
     constructor(public readonly roomUrl: string, private socketListener: ZoneEventListener) {
@@ -42,7 +42,7 @@ export class PusherRoom {
         this.positionNotifier.setViewport(socket, viewport);
     }
 
-    public join(socket: ExSocketInterface) {
+    public join(socket: ExSocketInterface): void {
         this.listeners.add(socket);
 
         if (!this.mucRooms) {
@@ -53,7 +53,7 @@ export class PusherRoom {
         socket.pusherRoom = this;
     }
 
-    public leave(socket: ExSocketInterface) {
+    public leave(socket: ExSocketInterface): void {
         this.positionNotifier.removeViewport(socket);
         this.listeners.delete(socket);
         if (socket.xmppClient) {
@@ -100,6 +100,12 @@ export class PusherRoom {
                             subMessage.setVariablemessage(variableMessage);
                             listener.emitInBatch(subMessage);
                         }
+                    }
+                } else if (message.hasEditmapmessage()) {
+                    for (const listener of this.listeners) {
+                        const subMessage = new SubMessage();
+                        subMessage.setEditmapmessage(message.getEditmapmessage());
+                        listener.emitInBatch(subMessage);
                     }
                 } else if (message.hasErrormessage()) {
                     const errorMessage = message.getErrormessage() as ErrorMessage;

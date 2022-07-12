@@ -20,19 +20,21 @@ import {
     SubToPusherRoomMessage,
     VariableWithTagMessage,
     ServerToClientMessage,
+    PingMessage,
 } from "../Messages/generated/messages_pb";
 import { ProtobufUtils } from "../Model/Websocket/ProtobufUtils";
 import { RoomSocket, ZoneSocket } from "../RoomManager";
 import { Admin } from "../Model/Admin";
 import { adminApi } from "../Services/AdminApi";
 import { isMapDetailsData, MapDetailsData, MapThirdPartyData } from "../Messages/JsonMessages/MapDetailsData";
-import { ITiledMap } from "@workadventure/tiled-map-type-guard/dist";
+import { ITiledMap } from "@workadventure/tiled-map-type-guard";
 import { mapFetcher } from "../Services/MapFetcher";
 import { VariablesManager } from "../Services/VariablesManager";
 import {
     ADMIN_API_URL,
     BBB_SECRET,
     BBB_URL,
+    ENABLE_FEATURE_MAP_EDITOR,
     JITSI_ISS,
     JITSI_URL,
     SECRET_JITSI_KEY,
@@ -42,6 +44,8 @@ import { emitErrorOnRoomSocket } from "../Services/MessageHelpers";
 import { VariableError } from "../Services/VariableError";
 import { ModeratorTagFinder } from "../Services/ModeratorTagFinder";
 import { MapBbbData, MapJitsiData } from "../Messages/JsonMessages/MapDetailsData";
+import { mapStorageClient } from "../Services/MapStorageClient";
+import { MapEditorMessagesHandler } from "./MapEditorMessagesHandler";
 import { MapLoadingError } from "../Services/MapLoadingError";
 
 export type ConnectCallback = (user: User, group: Group) => void;
@@ -57,10 +61,11 @@ export class GameRoom {
     private itemsState = new Map<number, unknown>();
 
     private readonly positionNotifier: PositionNotifier;
-    private versionNumber: number = 1;
-    private nextUserId: number = 1;
+    private versionNumber = 1;
+    private nextUserId = 1;
 
     private roomListeners: Set<RoomSocket> = new Set<RoomSocket>();
+    private mapEditorMessagesHandler = new MapEditorMessagesHandler(this.roomListeners);
 
     private constructor(
         public readonly roomUrl: string,
@@ -121,6 +126,14 @@ export class GameRoom {
             mapDetails.thirdParty ?? undefined
         );
 
+        if (ENABLE_FEATURE_MAP_EDITOR) {
+            mapStorageClient.ping(new PingMessage(), (err, res) => {
+                console.log(`==================================`);
+                console.log(err);
+                console.log(JSON.stringify(res));
+            });
+        }
+
         return gameRoom;
     }
 
@@ -163,7 +176,10 @@ export class GameRoom {
             joinRoomMessage.getVisitcardurl(),
             joinRoomMessage.getName(),
             ProtobufUtils.toCharacterLayerObjects(joinRoomMessage.getCharacterlayerList()),
-            joinRoomMessage.getCompanion()
+            joinRoomMessage.getCompanion(),
+            undefined,
+            undefined,
+            joinRoomMessage.getActivatedinviteuser()
         );
         this.nextUserId++;
         this.users.set(user.id, user);
@@ -804,5 +820,9 @@ export class GameRoom {
             };
         }
         return undefined;
+    }
+
+    public getMapEditorMessagesHandler(): MapEditorMessagesHandler {
+        return this.mapEditorMessagesHandler;
     }
 }

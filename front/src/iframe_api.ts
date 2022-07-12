@@ -18,6 +18,12 @@ import type { Popup } from "./Api/iframe/Ui/Popup";
 import type { Sound } from "./Api/iframe/Sound/Sound";
 import { answerPromises, queryWorkadventure } from "./Api/iframe/IframeApiContribution";
 import camera from "./Api/iframe/camera";
+export type { UIWebsite } from "./Api/iframe/Ui/UIWebsite";
+export type { Menu } from "./Api/iframe/Ui/Menu";
+export type { ActionMessage } from "./Api/iframe/Ui/ActionMessage";
+export type { EmbeddedWebsite } from "./Api/iframe/Room/EmbeddedWebsite";
+export type { Area } from "./Api/iframe/Area/Area";
+export type { RemotePlayer, ActionsMenuAction } from "./Api/iframe/ui";
 
 const globalState = createState("global");
 
@@ -134,7 +140,7 @@ const wa = {
     /**
      * @deprecated Use WA.nav.openCoWebSite instead
      */
-    openCoWebSite(url: string, allowApi: boolean = false, allowPolicy: string = ""): Promise<CoWebsite> {
+    openCoWebSite(url: string, allowApi = false, allowPolicy = ""): Promise<CoWebsite> {
         console.warn("Method WA.openCoWebSite is deprecated. Please use WA.nav.openCoWebSite instead");
         return nav.openCoWebSite(url, allowApi, allowPolicy);
     },
@@ -178,6 +184,7 @@ const wa = {
 };
 
 export type WorkAdventureApi = typeof wa;
+export type { Sound, Popup, ButtonDescriptor, CoWebsite };
 
 declare global {
     interface Window {
@@ -226,6 +233,7 @@ window.addEventListener("message", (message: TypedMessageEvent<unknown>) => {
             const payloadData = safeParsedPayload.data;
 
             const callback = registeredCallbacks[payloadData.type];
+            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
             // @ts-ignore
             callback?.(payloadData.data);
         }

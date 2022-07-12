@@ -57,6 +57,12 @@ class IframeListener {
     private readonly _loadPageStream: Subject<string> = new Subject();
     public readonly loadPageStream = this._loadPageStream.asObservable();
 
+    private readonly _openChatStream: Subject<void> = new Subject();
+    public readonly openChatStream = this._openChatStream.asObservable();
+
+    private readonly _closeChatStream: Subject<void> = new Subject();
+    public readonly closeChatStream = this._closeChatStream.asObservable();
+
     private readonly _disablePlayerControlStream: Subject<void> = new Subject();
     public readonly disablePlayerControlStream = this._disablePlayerControlStream.asObservable();
 
@@ -132,7 +138,7 @@ class IframeListener {
     private readonly iframes = new Set<HTMLIFrameElement>();
     private readonly iframeCloseCallbacks = new Map<HTMLIFrameElement, (() => void)[]>();
     private readonly scripts = new Map<string, HTMLIFrameElement>();
-    private sendPlayerMove: boolean = false;
+    private sendPlayerMove = false;
 
     // Note: we are forced to type this in unknown and later cast with "as" because of https://github.com/microsoft/TypeScript/issues/31904
     private answerers: {
@@ -196,7 +202,7 @@ class IframeListener {
 
                     const errorHandler = (reason: unknown) => {
                         console.error("An error occurred while responding to an iFrame query.", reason);
-                        let reasonMsg: string = "";
+                        let reasonMsg = "";
                         if (reason instanceof Error) {
                             reasonMsg = reason.message;
                         } else if (typeof reason === "object") {
@@ -259,6 +265,10 @@ class IframeListener {
                         this._cameraFollowPlayerStream.next(iframeEvent.data);
                     } else if (iframeEvent.type === "chat") {
                         scriptUtils.sendAnonymousChat(iframeEvent.data, iframe.contentWindow ?? undefined);
+                    } else if (iframeEvent.type === "openChat") {
+                        this._openChatStream.next(iframeEvent.data);
+                    } else if (iframeEvent.type === "closeChat") {
+                        this._closeChatStream.next(iframeEvent.data);
                     } else if (iframeEvent.type === "openPopup") {
                         this._openPopupStream.next(iframeEvent.data);
                     } else if (iframeEvent.type === "closePopup") {
@@ -344,7 +354,7 @@ class IframeListener {
         this.iframes.delete(iframe);
     }
 
-    registerScript(scriptUrl: string, enableModuleMode: boolean = true): Promise<void> {
+    registerScript(scriptUrl: string, enableModuleMode = true): Promise<void> {
         return new Promise<void>((resolve) => {
             console.info("Loading map related script at ", scriptUrl);
 

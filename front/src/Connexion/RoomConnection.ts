@@ -18,7 +18,12 @@ import { adminMessagesService } from "./AdminMessagesService";
 import { connectionManager } from "./ConnectionManager";
 import { get } from "svelte/store";
 import { followRoleStore, followUsersStore } from "../Stores/FollowStore";
-import { menuIconVisiblilityStore, menuVisiblilityStore, warningContainerStore } from "../Stores/MenuStore";
+import {
+    inviteUserActivated,
+    menuIconVisiblilityStore,
+    menuVisiblilityStore,
+    warningContainerStore,
+} from "../Stores/MenuStore";
 import { localUserStore } from "./LocalUserStore";
 import {
     ServerToClientMessage as ServerToClientMessageTsProto,
@@ -34,19 +39,20 @@ import {
     EmoteEventMessage as EmoteEventMessageTsProto,
     PlayerDetailsUpdatedMessage as PlayerDetailsUpdatedMessageTsProto,
     WebRtcDisconnectMessage as WebRtcDisconnectMessageTsProto,
-    SendJitsiJwtMessage as SendJitsiJwtMessageTsProto,
-    BBBMeetingClientURLMessage as BBBMeetingClientURLMessageTsProto,
     ClientToServerMessage as ClientToServerMessageTsProto,
     PositionMessage as PositionMessageTsProto,
     ViewportMessage as ViewportMessageTsProto,
     PositionMessage_Direction,
     SetPlayerDetailsMessage as SetPlayerDetailsMessageTsProto,
-    PingMessage as PingMessageTsProto,
     CharacterLayerMessage,
     AvailabilityStatus,
+    QueryMessage,
+    AnswerMessage,
+    JoinBBBMeetingAnswer,
     XmppSettingsMessage,
     XmppConnectionStatusChangeMessage_Status,
     MoveToPositionMessage as MoveToPositionMessageProto,
+    EditMapMessage,
 } from "../Messages/ts-proto-generated/protos/messages";
 import { Subject, BehaviorSubject } from "rxjs";
 import { selectCharacterSceneVisibleStore } from "../Stores/SelectCharacterStore";
@@ -57,6 +63,7 @@ import { apiVersionHash } from "../Messages/JsonMessages/ApiVersion";
 import ElementExt from "../Xmpp/Lib/ElementExt";
 import { Parser } from "@xmpp/xml";
 import { mucRoomsStore } from "../Stores/MucRoomsStore";
+import { ITiledMapRectangleObject } from "../Phaser/Game/GameMap";
 
 const parse = (data: string): ElementExt | null => {
     const p = new Parser();
@@ -87,14 +94,14 @@ const parse = (data: string): ElementExt | null => {
     }
 };
 
-const manualPingDelay = 20000;
+// Number of milliseconds after which we consider the server has timed out (if we did not receive a ping)
+const pingTimeout = 20000;
 
 export class RoomConnection implements RoomConnection {
     private readonly socket: WebSocket;
     private userId: number | null = null;
-    private listeners: Map<string, Function[]> = new Map<string, Function[]>();
     private static websocketFactory: null | ((url: string) => any) = null; // eslint-disable-line @typescript-eslint/no-explicit-any
-    private closed: boolean = false;
+    private closed = false;
     private tags: string[] = [];
     private _userRoomToken: string | undefined;
 
@@ -126,12 +133,6 @@ export class RoomConnection implements RoomConnection {
 
     private readonly _teleportMessageMessageStream = new Subject<string>();
     public readonly teleportMessageMessageStream = this._teleportMessageMessageStream.asObservable();
-
-    private readonly _sendJitsiJwtMessageStream = new Subject<SendJitsiJwtMessageTsProto>();
-    public readonly sendJitsiJwtMessageStream = this._sendJitsiJwtMessageStream.asObservable();
-
-    private readonly _bbbMeetingClientURLMessageStream = new Subject<BBBMeetingClientURLMessageTsProto>();
-    public readonly bbbMeetingClientURLMessageStream = this._bbbMeetingClientURLMessageStream.asObservable();
 
     private readonly _worldFullMessageStream = new Subject<string | null>();
     public readonly worldFullMessageStream = this._worldFullMessageStream.asObservable();
@@ -174,6 +175,9 @@ export class RoomConnection implements RoomConnection {
     private readonly _variableMessageStream = new Subject<{ name: string; value: unknown }>();
     public readonly variableMessageStream = this._variableMessageStream.asObservable();
 
+    private readonly _editMapMessageStream = new Subject<EditMapMessage>();
+    public readonly editMapMessageStream = this._editMapMessageStream.asObservable();
+
     private readonly _playerDetailsUpdatedMessageStream = new Subject<PlayerDetailsUpdatedMessageTsProto>();
     public readonly playerDetailsUpdatedMessageStream = this._playerDetailsUpdatedMessageStream.asObservable();
 
@@ -191,6 +195,9 @@ export class RoomConnection implements RoomConnection {
 
     private readonly _connectionErrorStream = new Subject<CloseEvent>();
     public readonly connectionErrorStream = this._connectionErrorStream.asObservable();
+
+    // If this timeout triggers, we consider the connection is lost (no ping received)
+    private timeout: ReturnType<typeof setInterval> | undefined = undefined;
 
     private readonly _moveToPositionMessageStream = new Subject<MoveToPositionMessageProto>();
     public readonly moveToPositionMessageStream = this._moveToPositionMessageStream.asObservable();
@@ -255,17 +262,13 @@ export class RoomConnection implements RoomConnection {
 
         this.socket.binaryType = "arraybuffer";
 
-        let interval: ReturnType<typeof setInterval> | undefined = undefined;
-
         this.socket.onopen = () => {
-            //we manually ping every 20s to not be logged out by the server, even when the game is in background.
-            const pingMessage = PingMessageTsProto.encode({}).finish();
-            interval = setInterval(() => this.socket.send(pingMessage), manualPingDelay);
+            this.resetPingTimeout();
         };
 
         this.socket.addEventListener("close", (event) => {
-            if (interval) {
-                clearInterval(interval);
+            if (this.timeout) {
+                clearTimeout(this.timeout);
             }
 
             // If we are not connected yet (if a JoinRoomMessage was not sent), we need to retry.
@@ -362,6 +365,16 @@ export class RoomConnection implements RoomConnection {
                                 this._variableMessageStream.next({ name, value });
                                 break;
                             }
+                            case "pingMessage": {
+                                this.resetPingTimeout();
+                                this.sendPong();
+                                break;
+                            }
+                            case "editMapMessage": {
+                                const message = subMessage.editMapMessage;
+                                this._editMapMessageStream.next(message);
+                                break;
+                            }
                             case "xmppMessage": {
                                 const elementExtParsed = parse(subMessage.xmppMessage.stanza);
 
@@ -407,6 +420,12 @@ export class RoomConnection implements RoomConnection {
                     this.userId = roomJoinedMessage.currentUserId;
                     this.tags = roomJoinedMessage.tag;
                     this._userRoomToken = roomJoinedMessage.userRoomToken;
+                    //define if there is invite user option activated
+                    inviteUserActivated.set(
+                        roomJoinedMessage.activatedInviteUser != undefined
+                            ? roomJoinedMessage.activatedInviteUser
+                            : true
+                    );
 
                     // If one of the URLs sent to us does not exist, let's go to the Woka selection screen.
                     if (
@@ -505,14 +524,6 @@ export class RoomConnection implements RoomConnection {
                     this._teleportMessageMessageStream.next(message.teleportMessageMessage.map);
                     break;
                 }
-                case "sendJitsiJwtMessage": {
-                    this._sendJitsiJwtMessageStream.next(message.sendJitsiJwtMessage);
-                    break;
-                }
-                case "bbbMeetingClientURLMessage": {
-                    this._bbbMeetingClientURLMessageStream.next(message.bbbMeetingClientURLMessage);
-                    break;
-                }
                 case "groupUsersUpdateMessage": {
                     this._groupUsersUpdateMessageStream.next(message.groupUsersUpdateMessage);
                     break;
@@ -596,6 +607,23 @@ export class RoomConnection implements RoomConnection {
                     this._moveToPositionMessageStream.next(message.moveToPositionMessage);
                     break;
                 }
+                case "answerMessage": {
+                    const queryId = message.answerMessage.id;
+                    const query = this.queries.get(queryId);
+                    if (query === undefined) {
+                        throw new Error("Got an answer to a query we have no track of: " + queryId.toString());
+                    }
+                    if (message.answerMessage.answer === undefined) {
+                        throw new Error("Invalid message received. Answer missing.");
+                    }
+                    if (message.answerMessage.answer.$case === "error") {
+                        query.reject(new Error(message.answerMessage.answer.error.message));
+                    } else {
+                        query.resolve(message.answerMessage.answer);
+                    }
+                    this.queries.delete(queryId);
+                    break;
+                }
                 default: {
                     // Security check: if we forget a "case", the line below will catch the error at compile-time.
                     const _exhaustiveCheck: never = message;
@@ -604,14 +632,24 @@ export class RoomConnection implements RoomConnection {
         };
     }
 
-    private dispatch(event: string, payload: unknown): void {
-        const listeners = this.listeners.get(event);
-        if (listeners === undefined) {
-            return;
+    private resetPingTimeout(): void {
+        if (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = undefined;
         }
-        for (const listener of listeners) {
-            listener(payload);
-        }
+        this.timeout = setTimeout(() => {
+            console.warn("Timeout detected server-side. Is your connexion down? Closing connexion.");
+            this.socket.close();
+        }, pingTimeout);
+    }
+
+    private sendPong(): void {
+        this.send({
+            message: {
+                $case: "pingMessage",
+                pingMessage: {},
+            },
+        });
     }
 
     /*public emitPlayerDetailsMessage(userName: string, characterLayersSelected: BodyResourceDescriptionInterface[]) {
@@ -772,18 +810,6 @@ export class RoomConnection implements RoomConnection {
         };
     }
 
-    /**
-     * Registers a listener on a message that is part of a batch
-     */
-    private onMessage(eventName: string, callback: Function): void {
-        let callbacks = this.listeners.get(eventName);
-        if (callbacks === undefined) {
-            callbacks = new Array<Function>();
-            this.listeners.set(eventName, callbacks);
-        }
-        callbacks.push(callback);
-    }
-
     private toGroupCreatedUpdatedMessage(message: GroupUpdateMessageTsProto): GroupCreatedUpdatedMessageInterface {
         const position = message.position;
         if (position === undefined) {
@@ -828,6 +854,12 @@ export class RoomConnection implements RoomConnection {
 
     public onServerDisconnected(callback: () => void): void {
         this.socket.addEventListener("close", (event) => {
+            // Cleanup queries:
+            const error = new Error("Socket closed with code " + event.code + ". Reason: " + event.reason);
+            for (const query of this.queries.values()) {
+                query.reject(error);
+            }
+
             if (this.closed === true || connectionManager.unloading) {
                 return;
             }
@@ -872,8 +904,8 @@ export class RoomConnection implements RoomConnection {
     }
 
     public uploadAudio(file: FormData) {
-        return Axios.post(`${UPLOADER_URL}/upload-audio-message`, file)
-            .then((res: { data: {} }) => {
+        return Axios.post<unknown>(`${UPLOADER_URL}/upload-audio-message`, file)
+            .then((res: { data: unknown }) => {
                 return res.data;
             })
             .catch((err) => {
@@ -902,30 +934,6 @@ export class RoomConnection implements RoomConnection {
                 reportPlayerMessage: {
                     reportedUserUuid,
                     reportComment,
-                },
-            },
-        });
-    }
-
-    public emitQueryJitsiJwtMessage(jitsiRoom: string): void {
-        this.send({
-            message: {
-                $case: "queryJitsiJwtMessage",
-                queryJitsiJwtMessage: {
-                    jitsiRoom,
-                },
-            },
-        });
-    }
-
-    public emitJoinBBBMeeting(meetingId: string, props: Map<string, string | number | boolean>): void {
-        const meetingName = props.get("meetingName") as string;
-        this.send({
-            message: {
-                $case: "joinBBBMeetingMessage",
-                joinBBBMeetingMessage: {
-                    meetingId,
-                    meetingName,
                 },
             },
         });
@@ -998,12 +1006,32 @@ export class RoomConnection implements RoomConnection {
         });
     }
 
-    public emitLockGroup(lock: boolean = true): void {
+    public emitLockGroup(lock = true): void {
         this.send({
             message: {
                 $case: "lockGroupPromptMessage",
                 lockGroupPromptMessage: {
                     lock,
+                },
+            },
+        });
+    }
+
+    public emitMapEditorModifyArea(config: ITiledMapRectangleObject): void {
+        this.send({
+            message: {
+                $case: "editMapMessage",
+                editMapMessage: {
+                    message: {
+                        $case: "modifyAreaMessage",
+                        modifyAreaMessage: {
+                            id: config.id,
+                            x: config.x,
+                            y: config.y,
+                            width: config.width,
+                            height: config.height,
+                        },
+                    },
                 },
             },
         });
@@ -1060,5 +1088,74 @@ export class RoomConnection implements RoomConnection {
         }).finish();
 
         this.socket.send(bytes);
+    }
+
+    private queries = new Map<
+        number,
+        {
+            answerType: string;
+            resolve: (message: Required<AnswerMessage>["answer"]) => void;
+            reject: (e: unknown) => void;
+        }
+    >();
+    private lastQueryId = 0;
+
+    private query<T extends Required<QueryMessage>["query"]>(message: T): Promise<Required<AnswerMessage>["answer"]> {
+        return new Promise<Required<AnswerMessage>["answer"]>((resolve, reject) => {
+            if (!message.$case.endsWith("Query")) {
+                throw new Error("Query types are supposed to be suffixed with Query");
+            }
+            const answerType = message.$case.substring(0, message.$case.length - 5) + "Answer";
+
+            this.queries.set(this.lastQueryId, {
+                answerType,
+                resolve,
+                reject,
+            });
+
+            this.send({
+                message: {
+                    $case: "queryMessage",
+                    queryMessage: {
+                        id: this.lastQueryId,
+                        query: message,
+                    },
+                },
+            });
+
+            this.lastQueryId++;
+        });
+    }
+
+    public async queryJitsiJwtToken(jitsiRoom: string): Promise<string> {
+        const answer = await this.query({
+            $case: "jitsiJwtQuery",
+            jitsiJwtQuery: {
+                jitsiRoom,
+            },
+        });
+        if (answer.$case !== "jitsiJwtAnswer") {
+            throw new Error("Unexpected answer");
+        }
+        return answer.jitsiJwtAnswer.jwt;
+    }
+
+    public async queryBBBMeetingUrl(
+        meetingId: string,
+        props: Map<string, string | number | boolean>
+    ): Promise<JoinBBBMeetingAnswer> {
+        const meetingName = props.get("meetingName") as string;
+
+        const answer = await this.query({
+            $case: "joinBBBMeetingQuery",
+            joinBBBMeetingQuery: {
+                meetingId,
+                meetingName,
+            },
+        });
+        if (answer.$case !== "joinBBBMeetingAnswer") {
+            throw new Error("Unexpected answer");
+        }
+        return answer.joinBBBMeetingAnswer;
     }
 }
